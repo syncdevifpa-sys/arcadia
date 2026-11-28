@@ -173,7 +173,7 @@ router.post('/migrate-next', authenticateToken, authorizeAdmin, async (_req, res
         connection = await db.getConnection();
         await connection.beginTransaction();
         const [[item]] = await connection.execute(
-            "SELECT id_item, mime, tamanho, conteudo FROM documento_itens " +
+            "SELECT id_item, nome_arquivo, mime, tamanho, conteudo FROM documento_itens " +
             "WHERE tipo = 'arquivo' AND conteudo IS NOT NULL AND drive_file_id IS NULL " +
             "ORDER BY id_item LIMIT 1 FOR UPDATE SKIP LOCKED"
         );
@@ -186,7 +186,7 @@ router.post('/migrate-next', authenticateToken, authorizeAdmin, async (_req, res
         }
         if (!Buffer.isBuffer(item.conteudo) || item.conteudo.length !== Number(item.tamanho) ||
             !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(item.mime || '')) throw Error('Metadados inválidos.');
-        fileId = await storage.upload(item.conteudo, item.mime);
+        fileId = await storage.upload(item.conteudo, item.mime, item.nome_arquivo);
         const download = await storage.download(fileId);
         if (!download.equals(item.conteudo)) throw Error('O conteúdo baixado diverge do original.');
         await connection.execute(

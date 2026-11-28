@@ -268,7 +268,7 @@ function createLibrary(database = db) {
                             'O espaço de arquivos do portal está cheio. Entre em contato com a equipe.'
                         );
                 }
-                if (useDrive) remoteId = await drive.upload(buffer, info.mime);
+                if (useDrive) remoteId = await drive.upload(buffer, info.mime, info.name);
                 const [result] = await c.execute(
                     `INSERT INTO documento_itens (id_usuario, id_pasta, titulo, descricao, visibilidade, tipo, url, nome_arquivo, mime, tamanho, conteudo${useDrive ? ', drive_file_id' : ''}${hasAuthors ? ', autor_obra' : ''}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${useDrive ? ', ?' : ''}${hasAuthors ? ', ?' : ''})`,
                     [

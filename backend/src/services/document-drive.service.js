@@ -76,11 +76,11 @@ async function publicationsFolder(request) {
     return folder.id;
 }
 
-async function upload(content, mime) {
+async function upload(content, mime, filename) {
     const request = await connect();
     const boundary = 'arcadia-' + crypto.randomUUID();
     const folderId = await publicationsFolder(request);
-    const metadata = JSON.stringify({ name: 'arcadia-documento-' + crypto.randomUUID(), mimeType: mime, parents: [folderId] });
+    const metadata = JSON.stringify({ name: filename || 'arcadia-documento-' + crypto.randomUUID(), mimeType: mime, parents: [folderId] });
     const header = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
         metadata + '\r\n--' + boundary + '\r\nContent-Type: ' + mime + '\r\n\r\n';
     const body = Buffer.concat([Buffer.from(header), content, Buffer.from('\r\n--' + boundary + '--\r\n')]);
