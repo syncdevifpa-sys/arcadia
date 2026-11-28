@@ -22,6 +22,27 @@
     driveButton.textContent = 'Conectar Google Drive';
     if (location.hostname.endsWith('-sync-dev1.vercel.app') && location.hostname.includes('test-google-drive')) {
         $('adminLogout').before(driveButton);
+        const testButton = document.createElement('button');
+        testButton.type = 'button';
+        testButton.className = driveButton.className;
+        testButton.textContent = 'Testar Google Drive';
+        driveButton.after(testButton);
+        testButton.addEventListener('click', async () => {
+            testButton.disabled = true;
+            status.textContent = 'Testando envio e download no Drive…';
+            try {
+                const response = await fetch('/api/google-drive/test', {
+                    method: 'POST', headers: { Authorization: 'Bearer ' + A.token.get() }
+                });
+                const result = await response.json();
+                if (!response.ok) throw Error(result.error);
+                status.textContent = result.message;
+            } catch (error) {
+                status.textContent = error.message || 'Não foi possível testar o Drive.';
+            } finally {
+                testButton.disabled = false;
+            }
+        });
         const outcome = new URLSearchParams(location.search).get('drive');
         if (outcome) {
             const message = document.createElement('p');
