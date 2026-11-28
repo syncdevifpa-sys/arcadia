@@ -28,7 +28,14 @@
             message.setAttribute('role', 'status');
             message.textContent = outcome === 'connected'
                 ? 'Conta dedicada do Google Drive autorizada.'
-                : 'Não foi possível autorizar o Drive. Tente novamente com a conta dedicada.';
+                : ({
+                      session: 'A tentativa de conexão expirou ou perdeu a sessão. Inicie novamente nesta mesma aba.',
+                      consent: 'O Google não concluiu o consentimento. Inicie novamente e conceda acesso ao Drive.',
+                      token: 'O Google recusou a troca da autorização. Confira o segredo do cliente Arcadia Web e a URI de retorno.',
+                      profile: 'O Arcádia não conseguiu consultar a identidade da conta no Google.',
+                      account: 'Use a conta de contato do Arcádia e conceda acesso ao Drive quando solicitado.',
+                      save: 'A conta foi autorizada, mas o Arcádia não conseguiu salvar a conexão no Neon de teste.'
+                  })[outcome] || 'Não foi possível autorizar o Drive.';
             document.querySelector('main').prepend(message);
         }
         driveButton.addEventListener('click', async () => {

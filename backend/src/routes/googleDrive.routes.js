@@ -44,8 +44,8 @@ router.post('/authorize', authenticateToken, authorizeAdmin, async (req, res) =>
         }
         const nonce = crypto.randomBytes(32).toString('base64url');
         const verifier = crypto.randomBytes(48).toString('base64url');
-        const state = jwt.sign({ nonce, verifier }, settings.key, { expiresIn: '5m', audience: 'arcadia-drive' });
-        res.cookie(cookie, state, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 300000, path: callbackPath });
+        const state = jwt.sign({ nonce, verifier }, settings.key, { expiresIn: '10m', audience: 'arcadia-drive' });
+        res.cookie(cookie, state, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 600000, path: callbackPath });
         const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
         url.search = new URLSearchParams({
             client_id: settings.clientId, redirect_uri: settings.uri, response_type: 'code',
@@ -60,6 +60,7 @@ router.post('/authorize', authenticateToken, authorizeAdmin, async (req, res) =>
 });
 
 router.get('/callback', async (req, res) => {
+    let stage = 'session';
     const signed = (req.headers.cookie || '').split(';').map(value => value.trim())
         .find(value => value.startsWith(cookie + '='))?.slice(cookie.length + 1);
     res.clearCookie(cookie, { httpOnly: true, secure: true, sameSite: 'lax', path: callbackPath });
@@ -67,7 +68,9 @@ router.get('/callback', async (req, res) => {
         const settings = config();
         if (!settings || new URL(settings.uri).host !== req.get('host')) return res.sendStatus(404);
         const state = jwt.verify(signed, settings.key, { algorithms: ['HS256'], audience: 'arcadia-drive' });
+        if (req.query.error) stage = 'consent';
         if (req.query.state !== state.nonce || typeof req.query.code !== 'string') throw Error();
+        stage = 'token';
         const response = await fetch('https://oauth2.googleapis.com/token', {
             method: 'POST', signal: AbortSignal.timeout(10000),
             body: new URLSearchParams({
@@ -77,13 +80,16 @@ router.get('/callback', async (req, res) => {
         });
         if (!response.ok) throw Error();
         const token = await response.json();
+        stage = 'profile';
         const profile = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
             headers: { Authorization: 'Bearer ' + token.access_token }, signal: AbortSignal.timeout(10000)
         });
         if (!profile.ok) throw Error();
+        stage = 'account';
         const identity = await profile.json();
         if (identity.email !== account || identity.email_verified !== true || !token.refresh_token ||
             !String(token.scope).split(' ').includes('https://www.googleapis.com/auth/drive.file')) throw Error();
+        stage = 'save';
         const iv = crypto.randomBytes(12);
         const cipher = crypto.createCipheriv('aes-256-gcm', settings.key, iv);
         const encrypted = Buffer.concat([cipher.update(token.refresh_token, 'utf8'), cipher.final()]);
@@ -94,7 +100,8 @@ router.get('/callback', async (req, res) => {
         );
         res.redirect(303, '/admin.html?drive=connected');
     } catch {
-        res.redirect(303, '/admin.html?drive=error');
+        console.warn('Google Drive: falha na etapa ' + stage);
+        res.redirect(303, '/admin.html?drive=' + stage);
     }
 });
 module.exports = router;
