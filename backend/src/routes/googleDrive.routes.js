@@ -9,18 +9,20 @@ const callbackPath = '/api/google-drive/callback';
 const account = 'portalarcadia.contato@gmail.com';
 
 function config() {
-    if (process.env.VERCEL_ENV !== 'preview') return null;
-    if (process.env.DB_CLIENT !== 'postgres') return null;
+    if (process.env.VERCEL_ENV !== 'preview') throw Object.assign(Error(), { setup: 'O Drive de teste exige um deploy Preview.' });
+    if (process.env.DB_CLIENT !== 'postgres') throw Object.assign(Error(), { setup: 'Defina DB_CLIENT=postgres neste Preview.' });
     const database = new URL(process.env.POSTGRES_URL);
     const testHost = 'ep-floral-resonance-bbs5f7ew.c-15.us-east-1.aws.neon.tech';
     const pooledTestHost = testHost.replace('.', '-pooler.');
-    if (![testHost, pooledTestHost].includes(database.hostname) || database.pathname !== '/arcadiabd') return null;
+    if (![testHost, pooledTestHost].includes(database.hostname) || database.pathname !== '/arcadiabd') throw Object.assign(Error(), { setup: 'POSTGRES_URL deve apontar para o banco arcadiabd do Neon de teste.' });
     const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: secret, GOOGLE_DRIVE_REDIRECT_URI: uri,
         GOOGLE_DRIVE_ENCRYPTION_KEY: rawKey } = process.env;
-    if (!clientId || !secret || !uri || !/^[a-f0-9]{64}$/i.test(rawKey || '')) return null;
+    if (!clientId || !secret) throw Object.assign(Error(), { setup: 'O Preview precisa de GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET.' });
+    if (!/^[a-f0-9]{64}$/i.test(rawKey || '')) throw Object.assign(Error(), { setup: 'GOOGLE_DRIVE_ENCRYPTION_KEY deve ter 64 caracteres hexadecimais.' });
+    if (!uri || !URL.canParse(uri)) throw Object.assign(Error(), { setup: 'GOOGLE_DRIVE_REDIRECT_URI está ausente ou inválida.' });
     const url = new URL(uri);
     if (url.protocol !== 'https:' || url.pathname !== callbackPath || url.search || url.hash ||
-        url.hostname === 'portalarcadia.vercel.app') return null;
+        url.hostname === 'portalarcadia.vercel.app') throw Object.assign(Error(), { setup: 'Use a URI HTTPS de retorno do Preview em GOOGLE_DRIVE_REDIRECT_URI.' });
     return { clientId, secret, uri, key: Buffer.from(rawKey, 'hex') };
 }
 
@@ -30,11 +32,16 @@ router.use((_req, res, next) => {
     next();
 });
 
-router.post('/authorize', authenticateToken, authorizeAdmin, (req, res) => {
+router.post('/authorize', authenticateToken, authorizeAdmin, async (req, res) => {
     try {
         const settings = config();
         if (!settings || new URL(settings.uri).host !== req.get('host'))
-            return res.status(503).json({ error: 'Configure o endereço do Preview e as credenciais do Drive.' });
+            return res.status(503).json({ error: 'Abra pelo mesmo domínio cadastrado em GOOGLE_DRIVE_REDIRECT_URI.' });
+        try {
+            await db.execute('SELECT id FROM google_drive_conexao WHERE id = ?', [1]);
+        } catch {
+            return res.status(503).json({ error: 'Falha ao consultar a tabela do Drive no Neon de teste. Confira a conexão e a migração 003.' });
+        }
         const nonce = crypto.randomBytes(32).toString('base64url');
         const verifier = crypto.randomBytes(48).toString('base64url');
         const state = jwt.sign({ nonce, verifier }, settings.key, { expiresIn: '5m', audience: 'arcadia-drive' });
@@ -47,8 +54,8 @@ router.post('/authorize', authenticateToken, authorizeAdmin, (req, res) => {
             code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url')
         });
         res.json({ url: url.href });
-    } catch {
-        res.status(503).json({ error: 'A configuração do Google Drive está incompleta.' });
+    } catch (error) {
+        res.status(503).json({ error: error.setup || 'A configuração do Google Drive está incompleta.' });
     }
 });
 
