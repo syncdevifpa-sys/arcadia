@@ -1,3 +1,4 @@
+const drive = require('./document-drive.service');
 const db = require('../config/database');
 const LIMITS = Object.freeze({
     description: 3000,
@@ -235,55 +236,65 @@ function createLibrary(database = db) {
         const link = info ? null : url(body.url);
         const visibility = publication(body),
             details = description(body);
-        return transaction(owner, async (c, user) => {
-            if (visibility !== 'privado' && !publisher(user))
-                fail(403, 'Somente professores ou administradores podem publicar materiais.');
-            const folder = await ownedFolder(c, owner, body.id_pasta);
-            const [[usage]] = await c.execute(
-                'SELECT COUNT(*) AS count, COALESCE(SUM(tamanho),0) AS used FROM documento_itens WHERE id_usuario = ?',
-                [owner]
-            );
-            const [[savedCount]] = await c.execute(
-                'SELECT COUNT(*) AS count FROM documento_salvos WHERE id_usuario = ?',
-                [owner]
-            );
-            if (Number(usage.count) + Number(savedCount.count) >= LIMITS.items)
-                fail(409, 'Limite de 500 documentos atingido.');
-            if (info) {
-                const [locks] = await c.execute(
-                    'SELECT id FROM documento_armazenamento WHERE id = 1 FOR UPDATE'
+        let remoteId;
+        const useDrive = Boolean(info && drive.enabled());
+        try {
+            return await transaction(owner, async (c, user) => {
+                if (visibility !== 'privado' && !publisher(user))
+                    fail(403, 'Somente professores ou administradores podem publicar materiais.');
+                const folder = await ownedFolder(c, owner, body.id_pasta);
+                const [[usage]] = await c.execute(
+                    'SELECT COUNT(*) AS count, COALESCE(SUM(tamanho),0) AS used FROM documento_itens WHERE id_usuario = ?',
+                    [owner]
                 );
-                if (!locks.length) fail(503, 'O armazenamento precisa ser habilitado.');
-                const [sizes] = await c.execute('SELECT tamanho FROM documento_itens FOR UPDATE');
-                const total = { used: sizes.reduce((n, row) => n + Number(row.tamanho), 0) };
-                if (Number(usage.used) + info.size > LIMITS.user)
-                    fail(409, 'Seu espaço de ' + LIMITS.user / (1024 * 1024) + ' MB está cheio.');
-                if (Number(total.used) + info.size > LIMITS.total)
-                    fail(
-                        409,
-                        'O espaço de arquivos do portal está cheio. Entre em contato com a equipe.'
+                const [[savedCount]] = await c.execute(
+                    'SELECT COUNT(*) AS count FROM documento_salvos WHERE id_usuario = ?',
+                    [owner]
+                );
+                if (Number(usage.count) + Number(savedCount.count) >= LIMITS.items)
+                    fail(409, 'Limite de 500 documentos atingido.');
+                if (info) {
+                    const [locks] = await c.execute(
+                        'SELECT id FROM documento_armazenamento WHERE id = 1 FOR UPDATE'
                     );
-            }
-            const [result] = await c.execute(
-                `INSERT INTO documento_itens (id_usuario, id_pasta, titulo, descricao, visibilidade, tipo, url, nome_arquivo, mime, tamanho, conteudo${hasAuthors ? ', autor_obra' : ''}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${hasAuthors ? ', ?' : ''})`,
-                [
-                    owner,
-                    folder,
-                    title,
-                    details,
-                    visibility,
-                    info ? 'arquivo' : 'link',
-                    link,
-                    info?.name || null,
-                    info?.mime || null,
-                    info?.size || 0,
-                    buffer || null,
-                    ...(hasAuthors ? [authorNames] : [])
-                ]
-            );
-            return { id_item: result.insertId };
-        });
+                    if (!locks.length) fail(503, 'O armazenamento precisa ser habilitado.');
+                    const [sizes] = await c.execute('SELECT tamanho FROM documento_itens FOR UPDATE');
+                    const total = { used: sizes.reduce((n, row) => n + Number(row.tamanho), 0) };
+                    if (Number(usage.used) + info.size > LIMITS.user)
+                        fail(409, 'Seu espaço de ' + LIMITS.user / (1024 * 1024) + ' MB está cheio.');
+                    if (Number(total.used) + info.size > LIMITS.total)
+                        fail(
+                            409,
+                            'O espaço de arquivos do portal está cheio. Entre em contato com a equipe.'
+                        );
+                }
+                if (useDrive) remoteId = await drive.upload(buffer, info.mime);
+                const [result] = await c.execute(
+                    `INSERT INTO documento_itens (id_usuario, id_pasta, titulo, descricao, visibilidade, tipo, url, nome_arquivo, mime, tamanho, conteudo${useDrive ? ', drive_file_id' : ''}${hasAuthors ? ', autor_obra' : ''}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${useDrive ? ', ?' : ''}${hasAuthors ? ', ?' : ''})`,
+                    [
+                        owner,
+                        folder,
+                        title,
+                        details,
+                        visibility,
+                        info ? 'arquivo' : 'link',
+                        link,
+                        info?.name || null,
+                        info?.mime || null,
+                        info?.size || 0,
+                        useDrive ? null : buffer || null,
+                        ...(useDrive ? [remoteId] : []),
+                        ...(hasAuthors ? [authorNames] : [])
+                    ]
+                );
+                return { id_item: result.insertId };
+            });
+        } catch (error) {
+            if (remoteId) await drive.trash(remoteId).catch(() => console.warn('Drive: upload sem vínculo requer revisão.'));
+            throw error;
+        }
     }
+
     async function item(connection, owner, key, binary = false, hasAuthors = false) {
         const [rows] = await connection.execute(
             `SELECT ${columns}${binary ? ', conteudo' : ''}, ${hasAuthors ? 'autor_obra' : 'NULL AS autor_obra'} FROM documento_itens WHERE id_item = ? AND id_usuario = ? FOR UPDATE`,
@@ -326,14 +337,24 @@ function createLibrary(database = db) {
         });
     }
     async function remove(owner, key) {
-        return transaction(owner, async (c) => {
+        const remoteId = await transaction(owner, async (c) => {
             await item(c, owner, key);
+            let fileId = null;
+            if (drive.enabled()) {
+                const [[row]] = await c.execute(
+                    'SELECT drive_file_id FROM documento_itens WHERE id_item = ? AND id_usuario = ?',
+                    [id(key), owner]
+                );
+                fileId = row?.drive_file_id || null;
+            }
             await c.execute('DELETE FROM documento_itens WHERE id_item = ? AND id_usuario = ?', [
-                id(key),
-                owner
+                id(key), owner
             ]);
+            return fileId;
         });
+        if (remoteId) await drive.trash(remoteId).catch(() => console.warn('Drive: arquivo excluído requer limpeza.'));
     }
+
     async function publicList(viewer = null) {
         const hasAuthors = await authorship();
         const [items] = await database.execute(
@@ -341,13 +362,22 @@ function createLibrary(database = db) {
         );
         return items;
     }
+    async function withContent(row) {
+        if (!row.drive_file_id) return row;
+        const { drive_file_id: fileId, ...metadata } = row;
+        try {
+            return { ...metadata, conteudo: await drive.download(fileId) };
+        } catch {
+            fail(503, 'O arquivo está temporariamente indisponível no Drive.');
+        }
+    }
     async function download(owner, key, viewer = owner ? {id_usuario: owner} : null) {
         const [items] = await database.execute(
-            `SELECT i.nome_arquivo, i.mime, i.tipo, i.conteudo FROM documento_itens i JOIN usuarios u ON u.id_usuario = i.id_usuario WHERE i.id_item = ? AND (i.id_usuario = ? OR (${audienceCondition(viewer)} AND ${publicAuthor}))`,
+            `SELECT i.nome_arquivo, i.mime, i.tipo, i.conteudo${drive.enabled() ? ', i.drive_file_id' : ''} FROM documento_itens i JOIN usuarios u ON u.id_usuario = i.id_usuario WHERE i.id_item = ? AND (i.id_usuario = ? OR (${audienceCondition(viewer)} AND ${publicAuthor}))`,
             [id(key), owner]
         );
         if (!items.length) fail(404, 'Documento não encontrado.');
-        return items[0];
+        return withContent(items[0]);
     }
     async function readable(owner, key, viewer = null) {
         const hasAuthors = await authorship();
@@ -471,11 +501,11 @@ function createLibrary(database = db) {
         if (!(users[0]?.is_admin === 1 || users[0]?.is_admin === true))
             fail(403, 'Somente administradores avaliam publicações.');
         const [rows] = await database.execute(
-            "SELECT nome_arquivo, mime, tipo, conteudo FROM documento_itens WHERE id_item = ? AND revisao = 'pendente'",
+            `SELECT nome_arquivo, mime, tipo, conteudo${drive.enabled() ? ', drive_file_id' : ''} FROM documento_itens WHERE id_item = ? AND revisao = 'pendente'`,
             [id(key)]
         );
         if (!rows.length) fail(404, 'Documento não encontrado.');
-        return rows[0];
+        return withContent(rows[0]);
     }
     return {
         list,

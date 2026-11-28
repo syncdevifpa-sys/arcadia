@@ -8,23 +8,7 @@ const cookie = 'arcadia_drive_oauth';
 const callbackPath = '/api/google-drive/callback';
 const account = 'portalarcadia.contato@gmail.com';
 
-function config() {
-    if (process.env.VERCEL_ENV !== 'preview') throw Object.assign(Error(), { setup: 'O Drive de teste exige um deploy Preview.' });
-    if (process.env.DB_CLIENT !== 'postgres') throw Object.assign(Error(), { setup: 'Defina DB_CLIENT=postgres neste Preview.' });
-    const database = new URL(process.env.POSTGRES_URL);
-    const testHost = 'ep-floral-resonance-bbs5f7ew.c-15.us-east-1.aws.neon.tech';
-    const pooledTestHost = testHost.replace('.', '-pooler.');
-    if (![testHost, pooledTestHost].includes(database.hostname) || database.pathname !== '/arcadiabd') throw Object.assign(Error(), { setup: 'POSTGRES_URL deve apontar para o banco arcadiabd do Neon de teste.' });
-    const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: secret, GOOGLE_DRIVE_REDIRECT_URI: uri,
-        GOOGLE_DRIVE_ENCRYPTION_KEY: rawKey } = process.env;
-    if (!clientId || !secret) throw Object.assign(Error(), { setup: 'O Preview precisa de GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET.' });
-    if (!/^[a-f0-9]{64}$/i.test(rawKey || '')) throw Object.assign(Error(), { setup: 'GOOGLE_DRIVE_ENCRYPTION_KEY deve ter 64 caracteres hexadecimais.' });
-    if (!uri || !URL.canParse(uri)) throw Object.assign(Error(), { setup: 'GOOGLE_DRIVE_REDIRECT_URI está ausente ou inválida.' });
-    const url = new URL(uri);
-    if (url.protocol !== 'https:' || url.pathname !== callbackPath || url.search || url.hash ||
-        url.hostname === 'portalarcadia.vercel.app') throw Object.assign(Error(), { setup: 'Use a URI HTTPS de retorno do Preview em GOOGLE_DRIVE_REDIRECT_URI.' });
-    return { clientId, secret, uri, key: Buffer.from(rawKey, 'hex') };
-}
+const { config } = require('../services/document-drive.service');
 
 router.use((_req, res, next) => {
     res.set('Cache-Control', 'no-store');

@@ -835,12 +835,19 @@ function createClasses(database = db) {
     async function download(owner, subject, key) {
         const actor = await user(database, owner);
         await scope(database, actor, subject);
+        const drive = require('./document-drive.service');
         const [rows] = await database.execute(
-            'SELECT i.nome_arquivo,i.tipo,i.conteudo FROM academico_publicacoes p JOIN documento_itens i ON i.id_item=p.id_item WHERE p.id_publicacao=? AND p.id_disciplina=?',
+            `SELECT i.nome_arquivo,i.tipo,i.conteudo${drive.enabled() ? ', i.drive_file_id' : ''} FROM academico_publicacoes p JOIN documento_itens i ON i.id_item=p.id_item WHERE p.id_publicacao=? AND p.id_disciplina=?`,
             [id(key), id(subject)]
         );
         if (!rows.length || rows[0].tipo !== 'arquivo') fail(404, 'Arquivo não encontrado.');
-        return rows[0];
+        const { drive_file_id: remoteId, ...file } = rows[0];
+        if (!remoteId) return file;
+        try {
+            return { ...file, conteudo: await drive.download(remoteId) };
+        } catch {
+            fail(503, 'O arquivo está temporariamente indisponível no Drive.');
+        }
     }
     return {
         archiveSubject,
