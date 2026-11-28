@@ -8,7 +8,8 @@ const cookie = 'arcadia_drive_oauth';
 const callbackPath = '/api/google-drive/callback';
 const account = 'portalarcadia.contato@gmail.com';
 
-const { config } = require('../services/document-drive.service');
+const storage = require('../services/document-drive.service');
+const { config } = storage;
 
 router.use((_req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -158,6 +159,49 @@ router.post('/test', authenticateToken, authorizeAdmin, async (req, res) => {
     } catch {
         console.warn('Google Drive: teste falhou na etapa de ' + stage);
         res.status(502).json({ error: 'O teste falhou na etapa de ' + stage + '. Uma pasta criada durante o teste pode ter ficado no Drive.' });
+    }
+});
+
+/* Copia um documento por vez, sem remover o original no Neon. */
+router.post('/migrate-next', authenticateToken, authorizeAdmin, async (_req, res) => {
+    if (!storage.enabled()) return res.sendStatus(404);
+    let connection;
+    let fileId;
+    let committing = false;
+    try {
+        config();
+        connection = await db.getConnection();
+        await connection.beginTransaction();
+        const [[item]] = await connection.execute(
+            "SELECT id_item, mime, tamanho, conteudo FROM documento_itens " +
+            "WHERE tipo = 'arquivo' AND conteudo IS NOT NULL AND drive_file_id IS NULL " +
+            "ORDER BY id_item LIMIT 1 FOR UPDATE SKIP LOCKED"
+        );
+        if (!item) {
+            const [[pending]] = await connection.execute(
+                "SELECT COUNT(*) AS total FROM documento_itens WHERE tipo = 'arquivo' AND conteudo IS NOT NULL AND drive_file_id IS NULL"
+            );
+            await connection.commit();
+            return res.json({ migrated: false, pending: Number(pending.total) });
+        }
+        if (!Buffer.isBuffer(item.conteudo) || item.conteudo.length !== Number(item.tamanho) ||
+            !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(item.mime || '')) throw Error('Metadados inválidos.');
+        fileId = await storage.upload(item.conteudo, item.mime);
+        const download = await storage.download(fileId);
+        if (!download.equals(item.conteudo)) throw Error('O conteúdo baixado diverge do original.');
+        await connection.execute(
+            'UPDATE documento_itens SET drive_file_id = ?, atualizado_em = atualizado_em WHERE id_item = ?',
+            [fileId, item.id_item]
+        );
+        committing = true;
+        await connection.commit();
+        res.json({ migrated: true });
+    } catch {
+        if (connection) await connection.rollback().catch(() => {});
+        if (fileId && !committing) await storage.trash(fileId).catch(() => {});
+        res.status(502).json({ error: 'Não foi possível confirmar a cópia. O arquivo original continua no Neon.' });
+    } finally {
+        if (connection) connection.release();
     }
 });
 

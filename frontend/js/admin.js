@@ -43,6 +43,31 @@
                 testButton.disabled = false;
             }
         });
+        const migrateButton = document.createElement('button');
+        migrateButton.type = 'button';
+        migrateButton.className = driveButton.className;
+        migrateButton.textContent = 'Copiar documento antigo ao Drive';
+        testButton.after(migrateButton);
+        migrateButton.addEventListener('click', async () => {
+            migrateButton.disabled = true;
+            status.textContent = 'Copiando e conferindo um documento…';
+            try {
+                const response = await fetch('/api/google-drive/migrate-next', {
+                    method: 'POST', headers: { Authorization: 'Bearer ' + A.token.get() }
+                });
+                const result = await response.json();
+                if (!response.ok) throw Error(result.error);
+                status.textContent = result.migrated
+                    ? 'Um documento foi copiado e conferido. O original continua no Neon.'
+                    : result.pending
+                        ? 'Há documentos em processamento. Tente novamente em instantes.'
+                        : 'Todos os documentos elegíveis já estão no Drive.';
+            } catch (error) {
+                status.textContent = error.message || 'Não foi possível copiar o documento.';
+            } finally {
+                migrateButton.disabled = false;
+            }
+        });
         const outcome = new URLSearchParams(location.search).get('drive');
         if (outcome) {
             const message = document.createElement('p');
