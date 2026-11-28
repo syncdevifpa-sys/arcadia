@@ -104,4 +104,77 @@ router.get('/callback', async (req, res) => {
         res.redirect(303, '/admin.html?drive=' + stage);
     }
 });
+/* Ensaio isolado de armazenamento, usando apenas conteúdo fictício. */
+router.post('/test', authenticateToken, authorizeAdmin, async (req, res) => {
+    let stage = 'configuração';
+    try {
+        const settings = config();
+        if (new URL(settings.uri).host !== req.get('host'))
+            return res.status(503).json({ error: 'Abra o endereço fixo do Preview do Drive.' });
+
+        stage = 'leitura da autorização';
+        const [[connection]] = await db.execute('SELECT credencial FROM google_drive_conexao WHERE id = ?', [1]);
+        if (!connection) return res.status(409).json({ error: 'Autorize a conta dedicada antes do teste.' });
+        const [iv, tag, encrypted] = connection.credencial.split('.').map(part => Buffer.from(part, 'base64url'));
+        const decipher = crypto.createDecipheriv('aes-256-gcm', settings.key, iv);
+        decipher.setAuthTag(tag);
+        const refreshToken = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+
+        stage = 'renovação do acesso';
+        const access = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST', signal: AbortSignal.timeout(8000),
+            body: new URLSearchParams({
+                client_id: settings.clientId, client_secret: settings.secret,
+                refresh_token: refreshToken, grant_type: 'refresh_token'
+            })
+        });
+        if (!access.ok) throw Error();
+        const token = (await access.json()).access_token;
+        if (!token) throw Error();
+        async function drive(path, options = {}) {
+            const response = await fetch('https://www.googleapis.com/' + path, {
+                ...options, signal: AbortSignal.timeout(8000),
+                headers: { ...options.headers, Authorization: 'Bearer ' + token }
+            });
+            if (!response.ok) throw Error();
+            return response;
+        }
+
+        stage = 'criação da pasta';
+        const folder = await (await drive('drive/v3/files?fields=id', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Arcádia - teste ' + new Date().toISOString(), mimeType: 'application/vnd.google-apps.folder' })
+        })).json();
+
+        stage = 'envio do arquivo';
+        const content = 'Arquivo fictício de teste do Arcádia. ' + crypto.randomUUID();
+        const boundary = 'arcadia-' + crypto.randomUUID();
+        const metadata = JSON.stringify({ name: 'arcadia-teste.txt', mimeType: 'text/plain', parents: [folder.id] });
+        const body = [
+            '--' + boundary, 'Content-Type: application/json; charset=UTF-8', '', metadata,
+            '--' + boundary, 'Content-Type: text/plain; charset=UTF-8', '', content,
+            '--' + boundary + '--', ''
+        ].join('\r\n');
+        const file = await (await drive('upload/drive/v3/files?uploadType=multipart&fields=id', {
+            method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body
+        })).json();
+
+        stage = 'download e conferência do conteúdo';
+        const download = await drive('drive/v3/files/' + encodeURIComponent(file.id) + '?alt=media');
+        if (await download.text() !== content) throw Error();
+
+        stage = 'verificação das permissões';
+        for (const id of [folder.id, file.id]) {
+            const result = await (await drive('drive/v3/files/' + encodeURIComponent(id) +
+                '/permissions?fields=nextPageToken,permissions(role,type)')).json();
+            if (result.nextPageToken || !result.permissions?.length ||
+                result.permissions.some(permission => permission.role !== 'owner')) throw Error();
+        }
+        res.json({ message: 'Pasta criada. Envio e download conferidos. A pasta e o arquivo estão acessíveis apenas à conta proprietária.' });
+    } catch {
+        console.warn('Google Drive: teste falhou na etapa de ' + stage);
+        res.status(502).json({ error: 'O teste falhou na etapa de ' + stage + '. Uma pasta criada durante o teste pode ter ficado no Drive.' });
+    }
+});
+
 module.exports = router;
