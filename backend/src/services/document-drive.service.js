@@ -54,10 +54,33 @@ async function connect() {
     };
 }
 
+async function publicationsFolder(request) {
+    const name = 'Publicações do Arcadia';
+    const mimeType = 'application/vnd.google-apps.folder';
+    const query = new URLSearchParams({
+        q: "trashed = false and 'root' in parents and mimeType = '" + mimeType + "' and name = '" + name + "'",
+        fields: 'nextPageToken,files(id)'
+    });
+    const { files, nextPageToken } = await (await request('drive/v3/files?' + query)).json();
+    if (nextPageToken || files.length > 1) throw Error('Há mais de uma pasta Publicações do Arcadia acessível.');
+    const folder = files[0] || await (await request('drive/v3/files?fields=id', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, mimeType })
+    })).json();
+    if (!folder.id) throw Error('O Drive não retornou a pasta de publicações.');
+    const permissions = await (await request('drive/v3/files/' + encodeURIComponent(folder.id) +
+        '/permissions?fields=nextPageToken,permissions(role)')).json();
+    if (permissions.nextPageToken || !permissions.permissions?.length ||
+        permissions.permissions.some(permission => permission.role !== 'owner'))
+        throw Error('A pasta de publicações precisa ser privada.');
+    return folder.id;
+}
+
 async function upload(content, mime) {
     const request = await connect();
     const boundary = 'arcadia-' + crypto.randomUUID();
-    const metadata = JSON.stringify({ name: 'arcadia-documento-' + crypto.randomUUID(), mimeType: mime });
+    const folderId = await publicationsFolder(request);
+    const metadata = JSON.stringify({ name: 'arcadia-documento-' + crypto.randomUUID(), mimeType: mime, parents: [folderId] });
     const header = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
         metadata + '\r\n--' + boundary + '\r\nContent-Type: ' + mime + '\r\n\r\n';
     const body = Buffer.concat([Buffer.from(header), content, Buffer.from('\r\n--' + boundary + '--\r\n')]);
